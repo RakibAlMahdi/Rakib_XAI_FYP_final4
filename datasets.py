@@ -1,6 +1,14 @@
-import os, random
+import os, random, json, hashlib
 import torch, torchaudio
 from torch.utils.data import Dataset
+
+CACHE_PATH = os.path.expanduser("~/.pcg_len_cache.json")
+_LEN_CACHE = {}
+if os.path.exists(CACHE_PATH):
+    try:
+        _LEN_CACHE = json.load(open(CACHE_PATH))
+    except Exception:
+        _LEN_CACHE = {}
 
 class SegmentPCGDataset(Dataset):
     """Generic PCG dataset that outputs fixed-length waveform segments.
@@ -24,8 +32,11 @@ class SegmentPCGDataset(Dataset):
         # Build list of tuples (wav_path, label, seg_idx, patient_id)
         self.items = []
         for wav, lab, pid in zip(df["wav_path"], df["label"], df["patient_id"]):
-            info = torchaudio.info(wav)
-            est_len = int(info.num_frames / info.sample_rate * self.resample_hz)
+            key = hashlib.md5(wav.encode()).hexdigest()
+            if key not in _LEN_CACHE:
+                info = torchaudio.info(wav)
+                _LEN_CACHE[key] = int(info.num_frames / info.sample_rate * self.resample_hz)
+            est_len = _LEN_CACHE[key]
             n_seg = max(1, est_len // self.seg_len)
             for sidx in range(n_seg):
                 self.items.append((wav, lab, sidx, pid))
@@ -63,4 +74,15 @@ class SegmentPCGDataset(Dataset):
                 L = random.randint(int(0.1*self.resample_hz), int(0.5*self.resample_hz))
                 s = random.randint(0, x.shape[1]-L)
                 x[:, s:s+L] = 0
-        return x.float(), torch.tensor(lab, dtype=torch.float32), pid 
+        return x.float(), torch.tensor(lab, dtype=torch.float32), pid
+
+# save cache at import exit only once
+import atexit
+
+@atexit.register
+def _save_len_cache():
+    if _LEN_CACHE:
+        try:
+            json.dump(_LEN_CACHE, open(CACHE_PATH, 'w'))
+        except Exception:
+            pass 
