@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--use_swa', action='store_true', help='Enable Stochastic Weight Averaging at end')
     parser.add_argument('--hard_neg_k', type=int, default=0, help='Max hard negative cache size')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
-    parser.add_argument('--best_metric', choices=['auc','bal_acc'], default='auc', help='Metric used to track best checkpoint')
+    parser.add_argument('--best_metric', choices=['auc','bal_acc','bal_gap'], default='auc', help='Metric used to track best checkpoint')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -91,6 +91,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_auc = -1.0
+    best_gap = 1.0
     best_epoch = -1
     best_thresh = 0.5
     best_acc_thr = 0.5
@@ -160,27 +161,47 @@ def main():
         accs = tpr * pos_frac + (1 - fpr) * (1 - pos_frac)
         adx = accs.argmax(); thr_acc = thr[adx]
 
-        # metrics at both thresholds
+        # fine search to equalise sens and spec around thr_youden ±0.1
+        thr_candidates = np.linspace(thr_youden-0.1, thr_youden+0.1, 101)
+        gap_list = []
+        for th in thr_candidates:
+            s_tmp, sp_tmp, _, _ = compute_metrics(pat_scores, pat_labels, th)
+            gap_list.append((abs(s_tmp-sp_tmp), th, s_tmp, sp_tmp))
+        gap, thr_bal, sens_bal, spec_bal = min(gap_list, key=lambda z: z[0])
+
+        # metrics at key thresholds
         sens_y, spec_y, acc_y, _ = compute_metrics(pat_scores, pat_labels, thr_youden)
         sens_a, spec_a, acc_a, _ = compute_metrics(pat_scores, pat_labels, thr_acc)
         auc = roc_auc_score(pat_labels.numpy(), pat_scores.numpy())
-
+        
         bal_acc = (sens_y + spec_y)/2
 
         print(
             f'Epoch {epoch}: AUC {auc:.3f} | '
             f'Thr_Youden {thr_youden:.3f}  Sens {sens_y:.3f} Spec {spec_y:.3f} Acc {acc_y:.3f} | '
-            f'Thr_Acc {thr_acc:.3f}  Acc {acc_a:.3f}')
+            f'Thr_Acc {thr_acc:.3f}  Acc {acc_a:.3f} | '
+            f'Thr_bal {thr_bal:.3f}  Sens {sens_bal:.3f} Spec {spec_bal:.3f} (gap {gap:.3f})')
 
         # keep best by AUC but record both thresholds
-        is_better = (auc > best_auc) if args.best_metric == 'auc' else (bal_acc > best_auc)
+        if args.best_metric == 'auc':
+            is_better = auc > best_auc
+        elif args.best_metric == 'bal_acc':
+            is_better = bal_acc > best_auc
+        else:  # bal_gap
+            is_better = gap < best_gap
+
         if is_better:
-            best_auc = auc if args.best_metric=='auc' else bal_acc
+            if args.best_metric == 'bal_gap':
+                best_gap = gap
+                best_auc = auc
+            else:
+                best_auc = auc if args.best_metric=='auc' else bal_acc
             best_epoch = epoch; best_thresh = thr_youden; best_acc_thr = thr_acc
             torch.save({
                 'state_dict': model.state_dict(),
                 'thr_youden': float(best_thresh),
-                'thr_acc': float(best_acc_thr)
+                'thr_acc': float(best_acc_thr),
+                'thr_bal': float(thr_bal)
             }, 'best_combined.pth')
             print(f'Saved new best model (epoch {epoch})')
             epochs_no_improve = 0
@@ -212,9 +233,9 @@ def main():
             swa_model.update_parameters(model)
             swa_sched.step()
 
-        swa_model_cpu = swa_model.cpu()
-        torch.optim.swa_utils.update_bn(train_loader, swa_model_cpu)
-        swa_model = swa_model_cpu.to(device)
+        bn_loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=args.workers,
+                               collate_fn=lambda b: torch.stack([x for x,_,_ in b]))
+        torch.optim.swa_utils.update_bn(bn_loader, swa_model)
         # evaluate swa model
         swa_model.eval(); probs_swa=[]; labels_swa=[]
         with torch.no_grad():

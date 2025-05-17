@@ -23,14 +23,26 @@ loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=2,
                                            torch.tensor([y for _,y,_ in b]),
                                            [pid for *_, pid in b]))
 
-scores, labels = [], []
+# ----- patient-level aggregation -----
+seg_scores, seg_labels, seg_pids = [], [], []
 with torch.no_grad():
-    for xb,yb,_ in loader:
-        p = torch.sigmoid(model(xb.to(device))).cpu().tolist()
-        scores.extend(p); labels.extend(yb.tolist())
+    for xb, yb, pids in loader:
+        probs = torch.sigmoid(model(xb.to(device))).cpu().tolist()
+        seg_scores.extend(probs); seg_labels.extend(yb.tolist()); seg_pids.extend(pids)
+
+pat_dict = {}
+lab_dict = {}
+for pid, s, lab in zip(seg_pids, seg_scores, seg_labels):
+    pat_dict.setdefault(pid, []).append(s)
+    lab_dict[pid] = lab
+
+scores = np.array([np.mean(v) for v in pat_dict.values()])
+labels = np.array([lab_dict[pid] for pid in pat_dict.keys()])
 
 fpr, tpr, thr = roc_curve(labels, scores)
 spec = 1 - fpr
+
+# distance in 2-D
 cost = np.abs(tpr-args.target_sens)+np.abs(spec-args.target_spec)
 idx  = cost.argmin()
 thr_clin = float(thr[idx])
