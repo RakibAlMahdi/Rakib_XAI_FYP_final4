@@ -34,10 +34,11 @@ def main():
     parser.add_argument('--workers', type=int, default=0, help='DataLoader workers (0 avoids Windows spawn issues)')
     parser.add_argument('--focal', action='store_true', help='Use focal loss instead of BCE')
     parser.add_argument('--freeze_blocks', type=int, default=0, help='Freeze first N inception blocks')
-    parser.add_argument('--patience', type=int, default=6, help='Early stop patience epochs')
+    parser.add_argument('--patience', type=int, default=8, help='Early stop patience epochs')
     parser.add_argument('--use_swa', action='store_true', help='Enable Stochastic Weight Averaging at end')
     parser.add_argument('--hard_neg_k', type=int, default=0, help='Max hard negative cache size')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
+    parser.add_argument('--best_metric', choices=['auc','bal_acc'], default='auc', help='Metric used to track best checkpoint')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -164,14 +165,18 @@ def main():
         sens_a, spec_a, acc_a, _ = compute_metrics(pat_scores, pat_labels, thr_acc)
         auc = roc_auc_score(pat_labels.numpy(), pat_scores.numpy())
 
+        bal_acc = (sens_y + spec_y)/2
+
         print(
             f'Epoch {epoch}: AUC {auc:.3f} | '
             f'Thr_Youden {thr_youden:.3f}  Sens {sens_y:.3f} Spec {spec_y:.3f} Acc {acc_y:.3f} | '
             f'Thr_Acc {thr_acc:.3f}  Acc {acc_a:.3f}')
 
         # keep best by AUC but record both thresholds
-        if auc > best_auc:
-            best_auc = auc; best_epoch = epoch; best_thresh = thr_youden; best_acc_thr = thr_acc
+        is_better = (auc > best_auc) if args.best_metric == 'auc' else (bal_acc > best_auc)
+        if is_better:
+            best_auc = auc if args.best_metric=='auc' else bal_acc
+            best_epoch = epoch; best_thresh = thr_youden; best_acc_thr = thr_acc
             torch.save({
                 'state_dict': model.state_dict(),
                 'thr_youden': float(best_thresh),
@@ -207,7 +212,9 @@ def main():
             swa_model.update_parameters(model)
             swa_sched.step()
 
-        torch.optim.swa_utils.update_bn(train_loader, swa_model)
+        swa_model_cpu = swa_model.cpu()
+        torch.optim.swa_utils.update_bn(train_loader, swa_model_cpu)
+        swa_model = swa_model_cpu.to(device)
         # evaluate swa model
         swa_model.eval(); probs_swa=[]; labels_swa=[]
         with torch.no_grad():
