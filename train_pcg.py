@@ -32,6 +32,9 @@ def main():
     parser.add_argument('--sr', type=int, default=1000)
     parser.add_argument('--seg_sec', type=int, default=10)
     parser.add_argument('--workers', type=int, default=0, help='DataLoader workers (0 avoids Windows spawn issues)')
+    parser.add_argument('--focal', action='store_true', help='Use focal loss instead of BCE')
+    parser.add_argument('--freeze_blocks', type=int, default=0, help='Freeze first N inception blocks')
+    parser.add_argument('--patience', type=int, default=6, help='Early stop patience epochs')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
     args = parser.parse_args()
 
@@ -61,7 +64,23 @@ def main():
     # Model & optimiser
     # ------------------------------------------------------------
     model = InceptionNet1D().to(device)
-    criterion = torch.nn.BCEWithLogitsLoss()
+
+    # ---------------- loss --------------------
+    if args.focal:
+        class FocalLoss(torch.nn.Module):
+            def __init__(self, gamma=2.0, alpha=0.75):
+                super().__init__()
+                self.gamma = gamma; self.alpha = alpha
+                self.bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+            def forward(self, logits, y):
+                bce_loss = self.bce(logits, y)
+                pt = torch.exp(-bce_loss)
+                focal = self.alpha * (1-pt)**self.gamma * bce_loss
+                return focal.mean()
+        criterion = FocalLoss()
+    else:
+        criterion = torch.nn.BCEWithLogitsLoss()
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     best_auc = -1.0
@@ -77,6 +96,15 @@ def main():
         best_acc_thr = ckpt.get('thr_acc', 0.5)
         print(f'Resumed from {args.resume}')
 
+    # optional layer freezing
+    if args.freeze_blocks > 0:
+        for name, param in model.named_parameters():
+            if name.startswith('blocks.'):
+                block_idx = int(name.split('.')[1])
+                if block_idx < args.freeze_blocks:
+                    param.requires_grad = False
+
+    epochs_no_improve = 0
     for epoch in range(1, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
@@ -129,6 +157,14 @@ def main():
                 'thr_acc': float(best_acc_thr)
             }, 'best_combined.pth')
             print(f'Saved new best model (epoch {epoch})')
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        # early stopping
+        if epochs_no_improve >= args.patience:
+            print(f'Early stopping after {args.patience} epochs without AUC improvement.')
+            break
 
     print(f'Best epoch {best_epoch}: AUC {best_auc:.3f} | thr_youden {best_thresh:.3f} | thr_acc {best_acc_thr:.3f}')
 
