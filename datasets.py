@@ -21,14 +21,14 @@ class SegmentPCGDataset(Dataset):
         self.resample_hz = resample_hz
         self.seg_len = segment_sec * resample_hz
         self.augment = augment
-        # Build list of tuples (wav_path, label, seg_idx)
+        # Build list of tuples (wav_path, label, seg_idx, patient_id)
         self.items = []
-        for wav, lab in zip(df["wav_path"], df["label"]):
+        for wav, lab, pid in zip(df["wav_path"], df["label"], df["patient_id"]):
             info = torchaudio.info(wav)
             est_len = int(info.num_frames / info.sample_rate * self.resample_hz)
             n_seg = max(1, est_len // self.seg_len)
             for sidx in range(n_seg):
-                self.items.append((wav, lab, sidx))
+                self.items.append((wav, lab, sidx, pid))
 
     def __len__(self):
         return len(self.items)
@@ -45,7 +45,7 @@ class SegmentPCGDataset(Dataset):
         return waveform[:, :self.seg_len]
 
     def __getitem__(self, idx):
-        wav_path, lab, sidx = self.items[idx]
+        wav_path, lab, sidx, pid = self.items[idx]
         wav, sr = torchaudio.load(wav_path)
         x = self._preprocess(wav, sr)
         # slice to requested segment
@@ -54,6 +54,13 @@ class SegmentPCGDataset(Dataset):
         if start >= x.shape[1]:
             start = 0; end = self.seg_len
         x = x[:, start:end]
-        if self.augment and random.random() < 0.2:
-            x = x + torch.randn_like(x) * 0.001
-        return x.float(), torch.tensor(lab, dtype=torch.float32) 
+        if self.augment:
+            # light Gaussian noise
+            if random.random() < 0.3:
+                x = x + torch.randn_like(x) * 0.001
+            # time-mask (SpecAugment-style) – zero 0.1-0.5 s window
+            if random.random() < 0.3:
+                L = random.randint(int(0.1*self.resample_hz), int(0.5*self.resample_hz))
+                s = random.randint(0, x.shape[1]-L)
+                x[:, s:s+L] = 0
+        return x.float(), torch.tensor(lab, dtype=torch.float32), pid 

@@ -1,5 +1,5 @@
 import argparse, random, os
-import pandas as pd, torch
+import pandas as pd, torch, numpy as np
 from torch.utils.data import DataLoader
 from datasets import SegmentPCGDataset
 from train_circor import InceptionNet1D
@@ -35,6 +35,8 @@ def main():
     parser.add_argument('--focal', action='store_true', help='Use focal loss instead of BCE')
     parser.add_argument('--freeze_blocks', type=int, default=0, help='Freeze first N inception blocks')
     parser.add_argument('--patience', type=int, default=6, help='Early stop patience epochs')
+    parser.add_argument('--use_swa', action='store_true', help='Enable Stochastic Weight Averaging at end')
+    parser.add_argument('--hard_neg_k', type=int, default=0, help='Max hard negative cache size')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
     args = parser.parse_args()
 
@@ -57,8 +59,12 @@ def main():
     train_ds = SegmentPCGDataset(train_df, resample_hz=args.sr, segment_sec=args.seg_sec, augment=True)
     val_ds = SegmentPCGDataset(val_df, resample_hz=args.sr, segment_sec=args.seg_sec, augment=False)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers)
-    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers)
+    def collate_fn(batch):
+        xs, ys, pids = zip(*batch)
+        return torch.stack(xs), torch.tensor(ys), list(pids)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=args.workers, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, num_workers=args.workers, collate_fn=collate_fn)
 
     # ------------------------------------------------------------
     # Model & optimiser
@@ -108,11 +114,21 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
-        for xb, yb in tqdm(train_loader, desc=f'Epoch {epoch}/{args.epochs}', leave=False):
+        for xb, yb, _pids in tqdm(train_loader, desc=f'Epoch {epoch}/{args.epochs}', leave=False):
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
+
+            # ---------- mixup ----------
+            if random.random() < 0.3:
+                lam = np.random.beta(0.4,0.4)
+                perm = torch.randperm(xb.size(0))
+                xb = lam*xb + (1-lam)*xb[perm]
+                yb = lam*yb + (1-lam)*yb[perm]
+
             logits = model(xb)
-            loss = criterion(logits.squeeze(1), yb)
+            # label smoothing 0.05
+            yb_smooth = yb*0.95 + 0.025
+            loss = criterion(logits.squeeze(1), yb_smooth)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
@@ -120,28 +136,33 @@ def main():
 
         # ---------------- validation -----------------
         model.eval()
-        probs, labels = [], []
+        probs, labels, patient_ids = [], [], []
         with torch.no_grad():
-            for xb, yb in val_loader:
+            for xb, yb, pids in val_loader:
                 p = torch.sigmoid(model(xb.to(device))).cpu()
-                probs.append(p)
-                labels.append(yb)
-        probs = torch.cat(probs)
-        labels = torch.cat(labels)
+                probs.append(p); labels.append(yb); patient_ids.extend(pids)
+        probs = torch.cat(probs); labels = torch.cat(labels)
+
+        # ------- patient-level aggregation ---------
+        patient_dict = {}
+        for prob, lab, pid in zip(probs, labels, patient_ids):
+            patient_dict.setdefault(pid, []).append(prob.item())
+        pat_scores = torch.tensor([np.mean(v) for v in patient_dict.values()])
+        pat_labels = torch.tensor([labels[patient_ids.index(pid)].item() for pid in patient_dict.keys()])
 
         # ----- thresholds -----
-        fpr, tpr, thr = roc_curve(labels.numpy(), probs.numpy())
+        fpr, tpr, thr = roc_curve(pat_labels.numpy(), pat_scores.numpy())
         youden = tpr - fpr
         ydx = youden.argmax(); thr_youden = thr[ydx]
 
-        pos_frac = labels.float().mean().item()
+        pos_frac = pat_labels.float().mean().item()
         accs = tpr * pos_frac + (1 - fpr) * (1 - pos_frac)
         adx = accs.argmax(); thr_acc = thr[adx]
 
         # metrics at both thresholds
-        sens_y, spec_y, acc_y, _ = compute_metrics(probs, labels, thr_youden)
-        sens_a, spec_a, acc_a, _ = compute_metrics(probs, labels, thr_acc)
-        auc = roc_auc_score(labels.numpy(), probs.numpy())
+        sens_y, spec_y, acc_y, _ = compute_metrics(pat_scores, pat_labels, thr_youden)
+        sens_a, spec_a, acc_a, _ = compute_metrics(pat_scores, pat_labels, thr_acc)
+        auc = roc_auc_score(pat_labels.numpy(), pat_scores.numpy())
 
         print(
             f'Epoch {epoch}: AUC {auc:.3f} | '
@@ -167,6 +188,37 @@ def main():
             break
 
     print(f'Best epoch {best_epoch}: AUC {best_auc:.3f} | thr_youden {best_thresh:.3f} | thr_acc {best_acc_thr:.3f}')
+
+    # --------------------------- SWA -----------------------
+    if args.use_swa:
+        print('Running SWA fine-tune...')
+        swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
+        swa_sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=5, eta_min=args.lr*0.1)
+        for _ in range(5):
+            model.train()
+            for xb,yb,_ in train_loader:
+                xb,yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    logits=model(xb)
+                    yb_s=yb*0.95+0.025
+                    loss=criterion(logits.squeeze(1), yb_s)
+                loss.backward(); optimizer.step()
+            swa_model.update_parameters(model)
+            swa_sched.step()
+
+        torch.optim.swa_utils.update_bn(train_loader, swa_model)
+        # evaluate swa model
+        swa_model.eval(); probs_swa=[]; labels_swa=[]
+        with torch.no_grad():
+            for xb,yb,_ in val_loader:
+                p=torch.sigmoid(swa_model(xb.to(device))).cpu(); probs_swa.append(p); labels_swa.append(yb)
+        probs_swa=torch.cat(probs_swa); labels_swa=torch.cat(labels_swa)
+        auc_swa=roc_auc_score(labels_swa.numpy(), probs_swa.numpy())
+        print(f'SWA AUC {auc_swa:.3f}')
+        if auc_swa>best_auc:
+            torch.save({'state_dict': swa_model.state_dict(), 'thr_youden': best_thresh, 'thr_acc': best_acc_thr}, 'best_combined.pth')
+            print('SWA model became new best checkpoint')
 
 
 if __name__ == '__main__':
