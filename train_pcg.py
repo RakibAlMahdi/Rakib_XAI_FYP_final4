@@ -235,7 +235,9 @@ def main():
 
         bn_loader = DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=args.workers,
                                collate_fn=lambda b: torch.stack([x for x,_,_ in b]))
-        torch.optim.swa_utils.update_bn(bn_loader, swa_model)
+        swa_cpu = swa_model.cpu()
+        torch.optim.swa_utils.update_bn(bn_loader, swa_cpu)
+        swa_model = swa_cpu.to(device)
         # evaluate swa model
         swa_model.eval(); probs_swa=[]; labels_swa=[]
         with torch.no_grad():
