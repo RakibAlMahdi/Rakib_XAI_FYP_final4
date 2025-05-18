@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--workers', type=int, default=0, help='DataLoader workers (0 avoids Windows spawn issues)')
     parser.add_argument('--focal', action='store_true', help='Use focal loss instead of BCE')
     parser.add_argument('--freeze_blocks', type=int, default=0, help='Freeze first N inception blocks')
+    parser.add_argument('--finetune_head', action='store_true', help='Freeze all layers except attention pooling and FC head')
     parser.add_argument('--patience', type=int, default=8, help='Early stop patience epochs')
     parser.add_argument('--use_swa', action='store_true', help='Enable Stochastic Weight Averaging at end')
     parser.add_argument('--hard_neg_k', type=int, default=0, help='Max hard negative cache size')
@@ -88,8 +89,7 @@ def main():
     else:
         criterion = torch.nn.BCEWithLogitsLoss()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-
+    # tracking variables
     best_auc = -1.0
     best_gap = 1.0
     best_epoch = -1
@@ -100,8 +100,8 @@ def main():
     if args.resume and os.path.isfile(args.resume):
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['state_dict'])
-        best_thresh = ckpt.get('thr_youden', 0.5)
-        best_acc_thr = ckpt.get('thr_acc', 0.5)
+        best_thresh = ckpt.get('thr_youden', best_thresh)
+        best_acc_thr = ckpt.get('thr_acc', best_acc_thr)
         print(f'Resumed from {args.resume}')
 
     # optional layer freezing
@@ -111,6 +111,19 @@ def main():
                 block_idx = int(name.split('.')[1])
                 if block_idx < args.freeze_blocks:
                     param.requires_grad = False
+
+    # freeze everything except head (apool + fc) if requested
+    if args.finetune_head:
+        for name, param in model.named_parameters():
+            if not (name.startswith('apool') or name.startswith('fc')):
+                param.requires_grad = False
+
+    # ensure optimiser only sees trainable params
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if len(trainable_params) == 0:
+        raise ValueError("No parameters left to train. Check --freeze_blocks / --finetune_head settings.")
+
+    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
     epochs_no_improve = 0
     for epoch in range(1, args.epochs + 1):
