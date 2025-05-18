@@ -74,6 +74,16 @@ class SegmentPCGDataset(Dataset):
                 L = random.randint(int(0.1*self.resample_hz), int(0.5*self.resample_hz))
                 s = random.randint(0, x.shape[1]-L)
                 x[:, s:s+L] = 0
+            # ±10% time-stretch (speed perturbation)
+            if random.random() < 0.3:
+                rate = random.uniform(0.9, 1.1)
+                L = x.shape[1]
+                x = torch.nn.functional.interpolate(x.unsqueeze(0), scale_factor=rate,
+                                                   mode="linear", align_corners=False).squeeze(0)
+                if x.shape[1] < L:
+                    x = torch.nn.functional.pad(x, (0, L - x.shape[1]))
+                else:
+                    x = x[:, :L]
         return x.float(), torch.tensor(lab, dtype=torch.float32), pid
 
 # save cache at import exit only once

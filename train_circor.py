@@ -138,21 +138,50 @@ class InceptionBlock(nn.Module):
 
 
 class AttentionPool1d(nn.Module):
-    """Attention-weighted pooling replacing GAP."""
+    """Attention pooling with sigmoid weights to allow multi‐peak focus."""
     def __init__(self, in_ch):
         super().__init__()
         self.attn = nn.Conv1d(in_ch, 1, 1)
 
-    def forward(self, x):  # x: (B,C,T)
-        w = torch.softmax(self.attn(x), dim=-1)  # (B,1,T)
-        return torch.sum(x * w, dim=-1)  # (B,C)
+    def forward(self, x):  # (B,C,T)
+        w = torch.sigmoid(self.attn(x))
+        w = w / (w.sum(dim=-1, keepdim=True) + 1e-8)
+        return torch.sum(x * w, dim=-1)
+
+
+class SincConv1d(nn.Module):
+    """Lightweight band-pass conv layer inspired by SincNet."""
+    def __init__(self, out_channels: int = 32, kernel_size: int = 101, sr: int = 1000):
+        super().__init__()
+        self.out_channels, self.kernel_size, self.sr = out_channels, kernel_size, sr
+        low = torch.linspace(0, sr//2, out_channels+1)[:-1] / sr
+        high = torch.linspace(0, sr//2, out_channels+1)[1:] / sr
+        self.low = nn.Parameter(low)
+        self.band = nn.Parameter(high - low)
+
+        n = torch.linspace(-(kernel_size//2), kernel_size//2, steps=kernel_size)
+        self.register_buffer('n_', n)
+        self.register_buffer('window', 0.54 - 0.46*torch.cos(2*math.pi*n/kernel_size))
+
+    def forward(self, x):  # (B,1,T)
+        low = 50 + torch.abs(self.low) * (self.sr/2 - 50)
+        high = torch.clamp(low + torch.abs(self.band)*(self.sr/2 - 50), 80, self.sr/2-1)
+        filters = []
+        for l, h in zip(low, high):
+            band = (torch.sinc(2*h*self.n_/self.sr) - torch.sinc(2*l*self.n_/self.sr))
+            band *= self.window
+            band = band / (2*band.sum())
+            filters.append(band)
+        weight = torch.stack(filters).unsqueeze(1)
+        return torch.conv1d(x, weight, padding=self.kernel_size//2)
 
 
 class InceptionNet1D(nn.Module):
     def __init__(self, n_blocks: int = 10, num_classes: int = 1):
         super().__init__()
+        self.conv0 = SincConv1d(out_channels=32, kernel_size=101, sr=1000)
         self.blocks = nn.ModuleList()
-        in_ch = 1
+        in_ch = 32
         branch_out = 32 * 5  # out_ch * num_branches (5)
         for i in range(n_blocks):
             self.blocks.append(InceptionBlock(in_ch))
@@ -162,6 +191,7 @@ class InceptionNet1D(nn.Module):
         self.fc = nn.Linear(in_ch, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # (B, 1, L)
+        x = self.conv0(x)
         for block in self.blocks:
             x = block(x)
         x = self.apool(x)

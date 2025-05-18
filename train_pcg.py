@@ -149,7 +149,7 @@ def main():
         patient_dict = {}
         for prob, lab, pid in zip(probs, labels, patient_ids):
             patient_dict.setdefault(pid, []).append(prob.item())
-        pat_scores = torch.tensor([np.mean(v) for v in patient_dict.values()])
+        pat_scores = torch.tensor([np.percentile(v,75) for v in patient_dict.values()])
         pat_labels = torch.tensor([labels[patient_ids.index(pid)].item() for pid in patient_dict.keys()])
 
         # ----- thresholds -----
