@@ -191,12 +191,36 @@ class InceptionNet1D(nn.Module):
         self.apool = AttentionPool1d(in_ch)
         self.fc = nn.Linear(in_ch, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # (B, 1, L)
+    def forward(self, x: torch.Tensor, *, return_attn: bool = False):  # (B,1,L)
+        """Standard forward pass.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input waveform, shape (B, 1, L)
+        return_attn : bool, optional
+            If True, also returns the normalised attention weights
+            (shape (B, L)) that were used in the pooling operation.
+
+        Returns
+        -------
+        torch.Tensor or tuple[torch.Tensor, torch.Tensor]
+            Logits tensor of shape (B,1).  If *return_attn* is True the
+            second item is the attention map w (B, L).
+        """
         x = self.conv0(x)
         for block in self.blocks:
             x = block(x)
-        x = self.apool(x)
-        return self.fc(x)  # logits (B,1)
+
+        # ---- compute attention weights explicitly so we can expose them ----
+        w = torch.sigmoid(self.apool.attn(x))           # (B,1,L)
+        w = w / (w.sum(dim=-1, keepdim=True) + 1e-8)    # normalise
+        pooled = torch.sum(x * w, dim=-1)               # (B,C)
+        logits = self.fc(pooled)                        # (B,1)
+
+        if return_attn:
+            return logits, w.squeeze(1)  # (B,1), (B,L)
+        return logits
 
 # ----------------------------- Metrics ----------------------------- #
 
