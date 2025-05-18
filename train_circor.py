@@ -170,7 +170,8 @@ class SincConv1d(nn.Module):
         for l, h in zip(low, high):
             band = (torch.sinc(2*h*self.n_/self.sr) - torch.sinc(2*l*self.n_/self.sr))
             band *= self.window
-            band = band / (2*band.sum())
+            den = 2 * band.sum()
+            band = band / (den + 1e-8)
             filters.append(band)
         weight = torch.stack(filters).unsqueeze(1)
         return torch.conv1d(x, weight, padding=self.kernel_size//2)
