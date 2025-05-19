@@ -109,32 +109,61 @@ def generate_explanation(
 # 4) Visualisation -----------------------------------------------------
 # ---------------------------------------------------------------------
 
-def visualise_explanation(data: dict, *, show_attention: bool = True):
-    """Plot waveform with SHAP mask (+ optional attention curve)."""
+def visualise_explanation(
+    data: dict,
+    *,
+    show_attention: bool = True,
+    save_path: Optional[str] = None,
+    dpi: int = 200,
+):
+    """Plot waveform with SHAP mask (+ optional attention curve).
+
+    Parameters
+    ----------
+    data : dict
+        Output of *generate_explanation*.
+    show_attention : bool, default True
+        Whether to draw the model's attention curve (green) on a
+        secondary y-axis.
+    save_path : str, optional
+        If given, the figure is saved to this path (PNG/PDF/etc.).
+    dpi : int, default 200
+        Resolution when *save_path* is used.
+    """
     wave = data["wave"]
     phi  = data["shap"]
     attn = data["attention"]
     t = np.arange(len(wave))
 
-    # normalise SHAP to 0-1 for alpha mapping; use diverging colormap
-    norm_phi = (phi - phi.min()) / (phi.max() - phi.min() + 1e-8)
-    cmap = plt.get_cmap("seismic")
+    # diverging colormap centred at zero (blue=negative, red=positive)
+    vmax = np.abs(phi).max() + 1e-8
+    norm_phi = (phi + vmax) / (2 * vmax)  # map [-vmax,vmax] → [0,1]
+    cmap = plt.get_cmap("bwr")
 
-    plt.figure(figsize=(12, 4))
-    plt.plot(t, wave, color="black", linewidth=0.8, label="waveform")
+    fig, ax1 = plt.subplots(figsize=(12, 4))
+    ax1.plot(t, wave, color="black", linewidth=0.8, label="waveform")
 
-    # coloured alpha mask
+    # coloured alpha mask sample-wise (fast enough for 10k samples)
     for i in range(len(wave)):
-        plt.axvspan(i, i + 1, ymin=0, ymax=1, color=cmap(norm_phi[i]),
-                    alpha=0.3, linewidth=0)
+        ax1.axvspan(i, i + 1, ymin=0, ymax=1, color=cmap(norm_phi[i]),
+                    alpha=0.4, linewidth=0)
 
     if show_attention:
+        ax2 = ax1.twinx()
         attn_norm = (attn - attn.min()) / (attn.max() - attn.min() + 1e-8)
-        plt.plot(t, attn_norm * (wave.max() - wave.min()) + wave.min(),
-                 color="green", alpha=0.6, label="attention")
+        ax2.plot(t, attn_norm, color="green", alpha=0.6, label="attention")
+        ax2.set_yticks([])
 
     title = f"Prob= {data['prob']:.2f}  ➜  {'Abnormal' if data['is_abnormal'] else 'Normal'}"
-    plt.title(title)
-    plt.xlabel("sample"); plt.ylabel("amplitude")
-    plt.legend(loc="upper right")
-    plt.tight_layout(); plt.show() 
+    ax1.set_title(title)
+    ax1.set_xlabel("sample"); ax1.set_ylabel("amplitude")
+    lines, labels = ax1.get_legend_handles_labels()
+    if show_attention:
+        l2, lab2 = ax2.get_legend_handles_labels(); lines += l2; labels += lab2
+    ax1.legend(lines, labels, loc="upper right")
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=dpi)
+
+    plt.show() 
