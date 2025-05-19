@@ -1,0 +1,239 @@
+BoxLayout:
+    orientation: 'vertical'
+    padding: dp(16)
+    spacing: dp(16)
+    
+    # Title with adaptive size
+    MDLabel:
+        text: "Rakib_FYP_XAI Audio Phonogram Monitor"
+        font_style: "H5"
+        halign: "center"
+        size_hint_y: None
+        height: dp(40) if app.is_mobile else dp(50)
+        font_size: '18sp' if app.is_mobile else '24sp'
+        
+    # Timer with adaptive size
+    MDLabel:
+        text: app.timer_text
+        font_style: "H2"
+        halign: "center"
+        size_hint_y: None
+        height: dp(70) if app.is_mobile else dp(100)
+        font_size: '38sp' if app.is_mobile else '48sp'
+        
+    # Waveform visualization
+    BoxLayout:
+        id: waveform_container
+        size_hint_y: 0.4
+        padding: dp(5)
+        canvas.before:
+            Color:
+                rgba: 0, 0, 0, 0.9  # Dark background like medical monitors
+            Rectangle:
+                pos: self.pos
+                size: self.size
+                
+    # Control buttons - First row (Record/Stop)
+    MDBoxLayout:
+        orientation: 'horizontal'
+        spacing: dp(10)
+        size_hint_y: None
+        height: dp(50) if app.is_mobile else dp(60)
+        padding: [dp(5), 0, dp(5), 0] if app.is_mobile else [0, 0, 0, 0]
+        
+        MDRaisedButton:
+            id: record_button
+            text: "Record" if not app.is_recording else "Stop"
+            on_release: app.toggle_recording()
+            md_bg_color: [0.8, 0.2, 0.2, 1] if app.is_recording else [0.2, 0.7, 0.2, 1]
+            disabled: app.is_playing
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+        MDRaisedButton:
+            id: stop_button
+            text: "Stop"
+            on_release: app.stop_recording()
+            disabled: not app.is_recording or not app.enable_stop or app.is_playing
+            md_bg_color: [0.7, 0.7, 0.7, 1] if not app.enable_stop else [0.8, 0.2, 0.2, 1]
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+    
+    # Control buttons - Second row (Play/Pause)
+    MDBoxLayout:
+        orientation: 'horizontal'
+        spacing: dp(10)
+        size_hint_y: None
+        height: dp(50) if app.is_mobile else dp(60)
+        padding: [dp(5), 0, dp(5), 0] if app.is_mobile else [0, 0, 0, 0]
+        
+        MDRaisedButton:
+            id: play_button
+            text: "Play"
+            on_release: app.play_audio()
+            disabled: app.is_recording or app.is_playing
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+        MDRaisedButton:
+            id: pause_button
+            text: "Pause"
+            on_release: app.pause_audio()
+            disabled: not app.is_playing
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+    # Open File button
+    MDBoxLayout:
+        orientation: 'horizontal'
+        spacing: dp(10)
+        size_hint_y: None
+        height: dp(50) if app.is_mobile else dp(60)
+        padding: [dp(5), 0, dp(5), 0] if app.is_mobile else [0, 0, 0, 0]
+        
+        MDRaisedButton:
+            id: open_button
+            text: "Open File"
+            on_release: app.open_file_manager()
+            disabled: app.is_recording or app.is_playing
+            size_hint_x: 1
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+    # Heart Sound Analysis buttons
+    MDBoxLayout:
+        orientation: 'horizontal'
+        spacing: dp(10)
+        size_hint_y: None
+        height: dp(50) if app.is_mobile else dp(60)
+        padding: [dp(5), 0, dp(5), 0] if app.is_mobile else [0, 0, 0, 0]
+        
+        MDRaisedButton:
+            id: analyze_button
+            text: "Analyze Heart Sound"
+            on_release: app.analyze_heart_sound()
+            disabled: app.is_recording or app.is_playing or not app.controller.waveform_data.size
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+        MDRaisedButton:
+            id: explain_button
+            text: "Explain Analysis"
+            on_release: app.generate_explanation()
+            disabled: app.is_recording or app.is_playing or app.analysis_result == "Not analyzed"
+            size_hint_x: 0.5
+            font_size: '14sp' if app.is_mobile else '16sp'
+            
+    # Divider separating controls from analysis section
+    MDSeparator:
+        height: dp(1)
+        size_hint_y: None
+        
+    # Analysis result display - enhanced for visibility
+    MDCard:
+        orientation: 'vertical'
+        size_hint_y: None
+        height: dp(90) if app.is_mobile else dp(110)
+        padding: [dp(10), dp(10), dp(10), dp(10)]
+        margin: [dp(8), dp(8), dp(8), dp(8)]
+        style: "outlined"
+        line_color: app.analysis_color if app.analysis_result != "Not analyzed" else [0.5, 0.5, 0.5, 0.5]
+        md_bg_color: [0.9, 0.9, 0.9, 0.2]
+        
+        MDLabel:
+            text: "Heart Sound Classification Result:"
+            halign: "center"
+            size_hint_y: None
+            height: dp(24) if app.is_mobile else dp(30)
+            font_size: '14sp' if app.is_mobile else '16sp'
+            bold: True
+            
+        MDLabel:
+            id: analysis_label
+            text: app.analysis_result
+            halign: "center"
+            size_hint_y: None
+            height: dp(50) if app.is_mobile else dp(60)
+            font_style: "H4"
+            color: app.analysis_color
+            font_size: '28sp' if app.is_mobile else '34sp'
+            bold: True
+            
+    # File label with adaptive size
+    MDLabel:
+        id: file_label
+        text: "Audio Recorder Ready"
+        halign: "center"
+        size_hint_y: None
+        height: dp(24) if app.is_mobile else dp(30)
+        font_size: '12sp' if app.is_mobile else '14sp'
+        shorten: True
+        shorten_from: 'left'
+        
+    # Flexible spacer at the bottom
+    Widget:
+        size_hint_y: 0.05 if app.is_mobile else 0.1
+        
+<SaveDialog>:
+    orientation: "vertical"
+    spacing: "12dp"
+    size_hint_y: None
+    height: "180dp" if app.is_mobile else "200dp"
+    
+    MDBoxLayout:
+        orientation: "horizontal"
+        spacing: "10dp"
+        
+        MDLabel:
+            text: "Filename:"
+            size_hint_x: 0.3
+            font_size: '12sp' if app.is_mobile else '14sp'
+            
+        MDTextField:
+            id: filename_input
+            hint_text: "Enter filename"
+            text: "my_recording"
+            size_hint_x: 0.7
+            font_size: '12sp' if app.is_mobile else '14sp'
+            
+    MDBoxLayout:
+        orientation: "horizontal"
+        spacing: "10dp"
+        
+        MDLabel:
+            text: "Format:"
+            size_hint_x: 0.3
+            font_size: '12sp' if app.is_mobile else '14sp'
+            
+        Spinner:
+            id: format_spinner
+            text: "wav"
+            values: ["wav", "mp3"]
+            size_hint_x: 0.7
+            font_size: '12sp' if app.is_mobile else '14sp'
+            
+    MDBoxLayout:
+        orientation: "horizontal"
+        spacing: "10dp"
+        
+        MDLabel:
+            text: "Directory:"
+            size_hint_x: 0.3
+            font_size: '12sp' if app.is_mobile else '14sp'
+            
+        MDBoxLayout:
+            orientation: "horizontal"
+            spacing: "5dp"
+            size_hint_x: 0.7
+            
+            MDLabel:
+                id: directory_label
+                text: "~/Documents"
+                size_hint_x: 0.7
+                shorten: True
+                shorten_from: 'left'
+                font_size: '12sp' if app.is_mobile else '14sp'
+                
+            MDIconButton:
+                icon: "folder-open"
+                size_hint_x: 0.3
+                on_release: app.choose_save_directory()
