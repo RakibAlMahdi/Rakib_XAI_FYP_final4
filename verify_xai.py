@@ -47,8 +47,12 @@ print("IG shape        :", ig.shape)
 # 5) SHAP (use 32 random noise segments as background just for test)
 # ------------------------------------------------------------------
 background = torch.randn(32, 1, 10_000, device=device) * 0.01
-explainer = shap.DeepExplainer(lambda t: torch.sigmoid(model(t)), background)
-shap_vals = explainer.shap_values(segment.unsqueeze(0))[0]   # shape (1, 1, L)
+# DeepExplainer supports PyTorch models directly; we pass the nn.Module so SHAP
+# can compute gradients internally. Using raw logits is fine for binary class.
+explainer = shap.DeepExplainer(model, background)
+shap_values = explainer.shap_values(segment.unsqueeze(0))
+# shap_values is a list with one array (one output class)
+shap_vals = shap_values[0]  # shape (1, 1, L)
 print("SHAP shape      :", torch.tensor(shap_vals).shape)
 
 print("\nSUCCESS – all three explanation tensors produced.")
