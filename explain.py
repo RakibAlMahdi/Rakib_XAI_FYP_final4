@@ -61,9 +61,10 @@ def integrated_gradients(
     else:
         baseline = baseline.to(device)
 
-    # generate interpolations: shape (steps, 1, 1, L)
-    alphas = torch.linspace(0, 1, steps, device=device).view(-1, 1, 1, 1)
-    interp = baseline + alphas * (segment - baseline)
+    # generate interpolations: shape (steps, 1, L)
+    # (no extra dimension so the batch axis is *steps*)
+    alphas = torch.linspace(0, 1, steps, device=device).view(-1, 1, 1)
+    interp = baseline + alphas * (segment - baseline)  # (steps, 1, L)
     interp.requires_grad_(True)
 
     # forward pass – sum outputs so we can call backward once
@@ -73,8 +74,8 @@ def integrated_gradients(
     preds = torch.sigmoid(logits).sum()
 
     preds.backward()
-    grads = interp.grad                           # (steps,1,1,L)
-    avg_grad = grads.mean(dim=0)                  # (1,1,L)
+    grads = interp.grad                           # (steps,1,L)
+    avg_grad = grads.mean(dim=0, keepdim=True)    # (1,1,L)
     attrib = (segment - baseline) * avg_grad      # (1,1,L)
     return attrib.squeeze().detach().cpu()        # (L,)
 
